@@ -1,48 +1,57 @@
-from flask import Flask, request
+from fastapi import FastAPI, Request, HTTPException
+from pydantic import BaseModel
+from binance.client import Client
 import hmac
 import hashlib
-import json
-import requests
+import time
+import os
 
-app = Flask(__name__)
+app = FastAPI()
 
-BINANCE_API_KEY = 'YOUR_API_KEY'
-BINANCE_API_SECRET = 'YOUR_SECRET_KEY'
+# Wprowadź tutaj swoje klucze Binance API
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY") or "TU_WKLEJ_API_KEY"
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET") or "TU_WKLEJ_SECRET"
 
-def send_binance_order(symbol, side, quantity):
-    url = 'https://api.binance.com/api/v3/order'
-    headers = {
-        'X-MBX-APIKEY': BINANCE_API_KEY
-    }
+client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 
-    params = {
-        'symbol': symbol,
-        'side': side,
-        'type': 'MARKET',
-        'quantity': quantity,
-        'timestamp': int(requests.get("https://api.binance.com/api/v3/time").json()["serverTime"])
-    }
+# Model danych przyjmowanych z TradingView
+class TradingViewAlert(BaseModel):
+    symbol: str
+    side: str  # 'buy' lub 'sell'
+    entry: str = None
+    exit: str = None
 
-    query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
-    signature = hmac.new(BINANCE_API_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
-    params['signature'] = signature
+@app.post("/trade")
+async def handle_trade(alert: TradingViewAlert):
+    symbol = alert.symbol.upper()  # np. BTCUSDC
+    side = alert.side.lower()      # buy / sell
 
-    response = requests.post(url, headers=headers, params=params)
-    return response.json()
+    # Binance wymaga symbol w formacie BTCUSDT albo BTCUSDC, upewnij się, że jest OK
+    # Ten przykład działa na Binance Spot
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.json
+    quantity = 0.001  # wielkość pozycji, ustaw według swojego zarządzania kapitałem
 
-    if data.get('passphrase') != 'moje_haslo':  # Ustal hasło do weryfikacji sygnału
-        return {'error': 'Nieprawidłowe hasło'}, 403
+    try:
+        if side == "buy":
+            order = client.create_order(
+                symbol=symbol,
+                side=Client.SIDE_BUY,
+                type=Client.ORDER_TYPE_MARKET,
+                quantity=quantity
+            )
+            return {"status": "success", "message": "Buy order executed", "order": order}
 
-    symbol = data.get('symbol', 'BTCUSDC')
-    quantity = float(data.get('quantity', 0.001))
+        elif side == "sell":
+            order = client.create_order(
+                symbol=symbol,
+                side=Client.SIDE_SELL,
+                type=Client.ORDER_TYPE_MARKET,
+                quantity=quantity
+            )
+            return {"status": "success", "message": "Sell order executed", "order": order}
 
-    result = send_binance_order(symbol=symbol, side='BUY', quantity=quantity)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid side, must be 'buy' or 'sell'")
 
-    return {'result': result}
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
